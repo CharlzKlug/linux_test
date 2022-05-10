@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config LLC
+	tristate
+
+config LLC2
+	tristate "ANSI/IEEE 802.2 LLC type 2 Support"
+	select LLC
+	help
+	  This is a Logical Link Layer type 2, connection oriented support.
+	  Select this if you want to have support for PF_LLC sockets.
+
+if LLC2
+
+config AF_LLC_KUNIT_TEST
+	tristate "This builds the MPTCP KUnit tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Currently covers af_llc.c llc_ui_recvmsg.
+	  Only useful for kernel devs running KUnit test harness and are not
+	  for inclusion into a production build.
+
+	  For more information on KUnit and unit tests in general please refer
+	  to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
+endif
