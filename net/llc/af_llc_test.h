@@ -34,6 +34,8 @@ static int test_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
   struct sk_buff *skb = NULL;
 
   struct sock *sk = sock->sk;
+
+  // здесь работает приведение к структуре llc_sock
   struct llc_sock *llc = llc_sk(sk);
 
   size_t copied = 0;
@@ -47,27 +49,75 @@ static int test_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
   copied = -ENOTCONN;
   if (unlikely(sk->sk_type == SOCK_STREAM && sk->sk_state == TCP_LISTEN))
     goto out ;
-  return 0 ;
- out:
 
-  // release_lock begins here 
-  spin_lock_bh(&sk->sk_lock.slock) ;
-  if (sk->sk_backlog.tail) {__release_sock(sk);}
-  if (sk->sk_prot->release_cb) {sk->sk_prot->release_cb(sk);}
-  sock_release_ownership(sk);
-  if (waitqueue_active(&sk->sk_lock.wq))
-    { wake_up(&sk->sk_lock.wq); }
-  spin_unlock_bh(&sk->sk_lock.slock);
-    // release_lock ends here 
-  
-  return (copied) ;
+  //если nonblock является истинным, то возвращает 0,
+  //если nonblock является ложным, то возвращает sk->sk_sndtimeo
+  //тип sk_sndtimeo есть long, %SO_SNDTIMEO setting
+  // надо выяснить когда истинен nonblock
+  timeo = sock_rcvtimeo(sk, nonblock);    
+
+  // здесь seq ссылается на значение llc->copied_seq
+  seq = &llc->copied_seq;
+
+  if (flags & MSG_PEEK) {
+    peek_seq = llc->copied_seq;
+    seq = &peek_seq;
+  }
+
+  // если flags & MSG_WAITALL истинен, то возвращает len,
+  // иначе min_t(int, READ_ONCE(sk->sk_rcvlowat), len)
+  // если же v окажется равен нулю, то вернёт 1.
+  // для flags = MSG_DONTWAIT target равен 1.
+  target = sock_rcvlowat(sk, flags & MSG_WAITALL, len);
+
+  copied = 0 ;
+  do {
+    u32 offset ;
+
+
+    // для данного случая signal_pending(current) = 0
+    if (signal_pending(current)) {
+      if (copied)
+	break;
+      copied = timeo ? sock_intr_errno(timeo) : -EAGAIN;
+      break;
+    }
+
+    skb = skb_peek(&sk->sk_receive_queue) ;
+    if (skb) {
+      offset = *seq;
+      copied = 77 ;
+      //goto found_ok_skb;
+    }
+
+    if (copied >= target && !READ_ONCE(sk->sk_backlog.tail))
+      break;
+
+    if (copied) {
+      if (sk->sk_err ||
+	  sk->sk_state == TCP_CLOSE ||
+	  (sk->sk_shutdown & RCV_SHUTDOWN) ||
+	  !timeo ||
+	  (flags & MSG_PEEK))
+	break;
+    } else {
+      if (sock_flag(sk, SOCK_DONE))
+	break;
+    }
+    
+    len -= 1 ;
+  } while (len > 0) ;
+ out:
+  // release_lock begins here
+  release_sock(sk);
+  // release_lock ends here 
+       return (copied) ;
+  //return timeo ;
 }
 */
 
-static void sample_test(struct kunit *test)
+static void llc_ui_recvmsg_enotconn_test(struct kunit *test)
 {
-  //  KUNIT_EXPECT_EQ(test, llc_ui_sap_last_autoport, 192);
-  //  KUNIT_EXPECT_TRUE(test, unlikely(1 == 0));
   struct sock sk ;
   struct socket sock ;
   struct proto prto ;
@@ -80,7 +130,7 @@ static void sample_test(struct kunit *test)
   mylisthead.next = &mylisthead ;
   wqh1.head.next = &wqh1.head ;
 
-  /* dumb function */
+  // dumb function
   prto.release_cb = &my_release_cb ;
   
   sk.sk_type = SOCK_STREAM ;
@@ -88,23 +138,49 @@ static void sample_test(struct kunit *test)
   sk.__sk_common.skc_prot=&prto;
   sk.sk_lock.wq.head.next = &sk.sk_lock.wq.head ;
   
-  //  struct socket sock ;
   sock.sk = &sk ;
-  //KUNIT_EXPECT_TRUE(test, (check_socket(&sock))) ;
-  //KUNIT_EXPECT_EQ(test, llc_ui_recvmsg(
   len = 100 ;
   flags = 0 ;
   msg.msg_name = &origin ;
-  //llc_ui_recvmsg(&sock, &msg, len, flags) ;
-  // KUNIT_EXPECT_EQ(test, test_recvmsg(&sock, &msg, len, flags), -ENOTCONN) ;
+
   KUNIT_EXPECT_EQ(test, llc_ui_recvmsg(&sock, &msg, len, flags), -ENOTCONN) ;
-  //KUNIT_EXPECT_FALSE(test, waitqueue_active(&sk.sk_lock.wq)) ;
-  //KUNIT_EXPECT_TRUE(test, list_empty(&mylisthead)) ;
-  //KUNIT_EXPECT_FALSE(test, !list_empty(&mylisthead)) ;
+}
+
+static void llc_ui_recvmsg_sock_done_test(struct kunit *test)
+{
+  struct sock sk ;
+  struct socket sock ;
+  struct proto prto ;
+  struct msghdr msg ;
+  size_t len ;
+  int flags ;
+  unsigned char origin[128] = "test" ;
+  struct wait_queue_head wqh1 ;
+  struct list_head mylisthead ;
+  mylisthead.next = &mylisthead ;
+  wqh1.head.next = &wqh1.head ;
+
+  // dumb function
+  prto.release_cb = &my_release_cb ;
+  
+  sk.sk_type = SOCK_RAW ;
+  sk.sk_state = TCP_LISTEN ;
+  sk.__sk_common.skc_prot=&prto;
+  sk.sk_lock.wq.head.next = &sk.sk_lock.wq.head ;
+
+  sock_set_flag (&sk, SOCK_DONE) ;
+  
+  sock.sk = &sk ;
+  len = 100 ;
+  flags = MSG_DONTWAIT ;
+  msg.msg_name = &origin ;
+
+  KUNIT_EXPECT_EQ(test, llc_ui_recvmsg(&sock, &msg, len, flags), 0) ;
 }
 
 static struct kunit_case af_llc_test_cases[] = {
-  KUNIT_CASE(sample_test),
+  KUNIT_CASE(llc_ui_recvmsg_enotconn_test),
+  KUNIT_CASE(llc_ui_recvmsg_sock_done_test),
   {},
 };
 
