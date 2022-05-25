@@ -1,0 +1,9 @@
+Где возможны вариации в функции llc_ui_recvmsg:
+    * 779-я строка. [timeo = sock_rcvtimeo(sk, nonblock);]
+    * 782-я строка. [if (flags & MSG_PEEK)]
+    * 787-я строка. [target = sock_rcvlowat(sk, flags & MSG_WAITALL, len);]
+    * 798-я строка. [ if (signal_pending(current)) { ]
+Нужно добавить sk_receive_queue.
+    * 808-я строка. [ if (skb) { ]
+    * 814-я строка. [ if (copied >= target && !READ_ONCE(sk->sk_backlog.tail)) ]
+    - 828-я строка. [ 			if (sk->sk_err) { ]

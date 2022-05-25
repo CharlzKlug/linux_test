@@ -10,6 +10,33 @@
 
 #include <kunit/test.h>
 
+#define TEST_SK_ERR(x) \
+  do {struct sock sk ; \
+  struct socket sock ; \
+  struct proto prto ; \
+  struct msghdr msg ; \
+  size_t len ; \
+  int flags ; \
+  int err ; \
+  unsigned char origin[128] = "test" ; \
+  struct wait_queue_head wqh1 ; \
+  struct list_head mylisthead ; \
+  mylisthead.next = &mylisthead ; \
+  wqh1.head.next = &wqh1.head ; \
+  prto.release_cb = &my_release_cb ; \
+  sk.sk_type = SOCK_RAW ; \
+  sk.sk_state = TCP_LISTEN ; \
+  sk.__sk_common.skc_prot=&prto; \
+  sk.sk_lock.wq.head.next = &sk.sk_lock.wq.head ;	\
+  sk.sk_err = (x) ;					\
+  err = - sk.sk_err ;					\
+  sock.sk = &sk ;					\
+  len = 100 ;						\
+  flags = MSG_DONTWAIT ;				\
+  msg.msg_name = &origin ;					      \
+  KUNIT_EXPECT_EQ(test, llc_ui_recvmsg(&sock, &msg, len, flags), err) ; \
+  } while (0)
+
 int wqa (struct wait_queue_head *wq_head)
 {
   return (1) ;
@@ -103,6 +130,12 @@ static int test_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
     } else {
       if (sock_flag(sk, SOCK_DONE))
 	break;
+
+      if (sk->sk_err) {
+	copied = sock_error(sk);
+	break;
+      }
+
     }
     
     len -= 1 ;
@@ -178,9 +211,20 @@ static void llc_ui_recvmsg_sock_done_test(struct kunit *test)
   KUNIT_EXPECT_EQ(test, llc_ui_recvmsg(&sock, &msg, len, flags), 0) ;
 }
 
+static void llc_ui_recvmsg_sk_err_test(struct kunit *test)
+{
+  TEST_SK_ERR(1) ;
+  TEST_SK_ERR(2) ;
+  TEST_SK_ERR(3) ;
+  TEST_SK_ERR(4) ;
+  TEST_SK_ERR(10) ;
+  TEST_SK_ERR(20) ;
+}
+
 static struct kunit_case af_llc_test_cases[] = {
   KUNIT_CASE(llc_ui_recvmsg_enotconn_test),
   KUNIT_CASE(llc_ui_recvmsg_sock_done_test),
+  KUNIT_CASE(llc_ui_recvmsg_sk_err_test),
   {},
 };
 
